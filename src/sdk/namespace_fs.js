@@ -1023,6 +1023,14 @@ class NamespaceFS {
 
                 const remain_size = Math.min(Math.max(0, end - pos), stat.size);
 
+                // wait for response buffer to drain before adding more data if needed -
+                // this occurs when the output network is slower than the input file
+                if (drain_promise) {
+                    await drain_promise;
+                    drain_promise = null;
+                    object_sdk.throw_if_aborted();
+                }
+
                 // allocate or reuse buffer
                 // TODO buffers_pool and the underlying semaphore should support abort signal
                 // to avoid sleeping inside the semaphore until the timeout while the request is already aborted.
@@ -1248,14 +1256,14 @@ class NamespaceFS {
 
     /**
      * _check_copy_storage_class returns true if a copy is needed to be forced.
-     * 
+     *
      * This might be needed if we need to manage xattr separately on the source
      * object and target object (eg. GLACIER objects).
-     * 
+     *
      * NOTE: The function will throw S3 error if source object storage class is
      * "GLACIER" but it is not in restored state (AWS behaviour).
-     * @param {nb.NativeFSContext} fs_context 
-     * @param {Record<any, any>} params 
+     * @param {nb.NativeFSContext} fs_context
+     * @param {Record<any, any>} params
      * @returns {Promise<boolean>}
      */
     async _check_copy_storage_class(fs_context, params) {
@@ -1393,8 +1401,8 @@ class NamespaceFS {
     }
 
     // 1. get latest version_id
-    // 2. if versioning is suspended - 
-    //     2.1 if version ID of the latest version is null - 
+    // 2. if versioning is suspended -
+    //     2.1 if version ID of the latest version is null -
     //       2.1.1 remove latest version
     //     2.2 else (version ID of the latest version is unique or there is no latest version) -
     //       2.2.1 remove a version (or delete marker) with null version ID from .versions/ (if exists)
@@ -1429,8 +1437,8 @@ class NamespaceFS {
                 if (this._is_versioning_suspended()) {
                     if (latest_ver_info?.version_id_str === NULL_VERSION_ID) {
                         dbg.log1('NamespaceFS._move_to_dest_version suspended: version ID of the latest version is null - the file will be unlinked');
-                        await native_fs_utils.safe_unlink(fs_context, latest_ver_path, latest_ver_info,
-                            gpfs_options?.delete_version, bucket_tmp_dir_path);
+                        //TODO should remove safe_unlink
+                        await native_fs_utils.safe_unlink(fs_context, latest_ver_path, latest_ver_info, gpfs_options, bucket_tmp_dir_path);
                     } else {
                         // remove a version (or delete marker) with null version ID from .versions/ (if exists)
                         await this._delete_null_version_from_versions_directory(key, fs_context);
@@ -1445,6 +1453,7 @@ class NamespaceFS {
                         gpfs_options && gpfs_options.move_to_versions, bucket_tmp_dir_path);
                 }
                 try {
+                    //TODO maybe need rename in suspention mode and lastest version null
                     // move new version to latest_ver_path (key path)
                     await native_fs_utils.safe_move(fs_context, new_ver_tmp_path, latest_ver_path, new_ver_info,
                         gpfs_options && gpfs_options.move_to_dst, bucket_tmp_dir_path);
@@ -1557,7 +1566,7 @@ class NamespaceFS {
                 const delimiter_idx = create_params_parsed.key.indexOf(params.delimiter, start_idx);
                 if (delimiter_idx > 0) {
                     common_prefixes_set.add(create_params_parsed.key.substring(0, delimiter_idx + 1));
-                    // if key has common prefix it should not be returned as an upload object 
+                    // if key has common prefix it should not be returned as an upload object
                     return undefined;
                 }
             }
@@ -1606,7 +1615,7 @@ class NamespaceFS {
         return path.join(params.mpu_path, `part-${params.num}`);
     }
 
-    // optimized version of upload_multipart - 
+    // optimized version of upload_multipart -
     // 1. if size is pre known -
     //    1.1. calc offset
     //    1.2. upload data to by_size file in offset position
@@ -1710,13 +1719,13 @@ class NamespaceFS {
         }
     }
 
-    // iterate over multiparts array - 
+    // iterate over multiparts array -
     // 1. if num of unique sizes is 1
     //    1.1. if this is the last part - link the size file and break the loop
     //    1.2. else, continue the loop
     // 2. if num of unique sizes is 2
     //    2.1. if should_copy_file_prefix
-    //         2.1.1. if the cur part is the last, link the previous part file to upload_path and copy the last part (tail) to upload_path  
+    //         2.1.1. if the cur part is the last, link the previous part file to upload_path and copy the last part (tail) to upload_path
     //         2.1.2. else - copy the prev part size file prefix to upload_path
     // 3. copy bytes of the current's part size file
     async complete_object_upload(params, object_sdk) {
@@ -2069,12 +2078,12 @@ class NamespaceFS {
     /**
      * restore_object simply sets the restore request xattr
      * which should be picked by another mechanism.
-     * 
+     *
      * restore_object internally relies on 2 xattrs:
      * - XATTR_RESTORE_REQUEST
      * - XATTR_RESTORE_EXPIRY
-     * @param {*} params 
-     * @param {nb.ObjectSDK} object_sdk 
+     * @param {*} params
+     * @param {nb.ObjectSDK} object_sdk
      * @returns {Promise<boolean>}
      */
     async restore_object(params, object_sdk) {
@@ -2195,7 +2204,7 @@ class NamespaceFS {
     }
 
     /**
-     * 
+     *
      * @param {*} fs_context - fs context object
      * @param {string} file_path - path to file
      * @param {*} set - the xattr object to be set
@@ -2533,7 +2542,7 @@ class NamespaceFS {
         }
         try {
             // Returns the real path of the entry.
-            // The entry path may point to regular file or directory, but can have symbolic links  
+            // The entry path may point to regular file or directory, but can have symbolic links
             const full_path = await nb_native().fs.realpath(fs_context, entry_path);
             if (!full_path.startsWith(this.bucket_path)) {
                 dbg.log0('check_bucket_boundaries: the path', entry_path, 'is not in the bucket', this.bucket_path, 'boundaries');
@@ -2762,7 +2771,8 @@ class NamespaceFS {
                         gpfs_options?.delete_version, bucket_tmp_dir_path);
                     return { ...version_info, latest: true };
                 } else {
-                    await native_fs_utils.unlink_ignore_enoent(fs_context, file_path);
+                    //TODO add try catch EONT
+                    await nb_native().fs.unlink(fs_context, file_path);
                 }
                 return version_info;
             } catch (err) {
@@ -2932,8 +2942,8 @@ class NamespaceFS {
                     } else {
                         // versioning suspended and version_id is null
                         dbg.log1('NamespaceFS._delete_latest_version: suspended mode version ID of the latest version is null - file will be unlinked');
-                        await native_fs_utils.safe_unlink(fs_context, latest_ver_path, latest_ver_info,
-                            gpfs_options?.delete_version, bucket_tmp_dir_path);
+                        //TODO should remove safe_unlink
+                        await native_fs_utils.safe_unlink(fs_context, latest_ver_path, latest_ver_info, gpfs_options, bucket_tmp_dir_path);
                     }
                 }
                 break;
@@ -2955,7 +2965,7 @@ class NamespaceFS {
 
     // We can have only one versioned object with null version ID per key.
     // It can be latest version, old version in .version/ directory or delete marker
-    // This function removes an object version or delete marker with a null version ID inside .version/ directory 
+    // This function removes an object version or delete marker with a null version ID inside .version/ directory
     async _delete_null_version_from_versions_directory(key, fs_context) {
         const is_gpfs = native_fs_utils._is_gpfs(fs_context);
         let retries = config.NSFS_RENAME_RETRIES;
@@ -2971,6 +2981,7 @@ class NamespaceFS {
                         await this._open_files_gpfs(fs_context, null_versioned_path, undefined, undefined, undefined, undefined, true) :
                         undefined;
                     const bucket_tmp_dir_path = this.get_bucket_tmpdir_full_path();
+                    //TODO should remove safe_unlink - suspention-mode
                     await native_fs_utils.safe_unlink(fs_context, null_versioned_path, null_versioned_path_info,
                         gpfs_options, bucket_tmp_dir_path);
 
