@@ -173,7 +173,7 @@ mocha.describe('bucketspace namespace_fs - versioning', function() {
             Policy: JSON.stringify(policy)
         });
 
-        res = await generate_nsfs_account(rpc_client, EMAIL, new_bucket_path_param, { uid: 5, gid: 5 });
+        res = await generate_nsfs_account(rpc_client, EMAIL, new_bucket_path_param, { uid: 1055, gid: 1055 });
         s3_uid5 = generate_s3_client(res.access_key, res.secret_key, CORETEST_ENDPOINT);
         accounts.push(res.email);
 
