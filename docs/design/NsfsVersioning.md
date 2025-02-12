@@ -49,6 +49,9 @@ In the figure, each original directory contains a hidden .versions/ sub- directo
 * The version ID will be attached as an xattr of the file.
 * When a latest version is moved to past versions directory, the file name will be changed from key to key_{version_id}.
 
+#### Multipart upload version order
+according to AWS specifications multipart upload version time should be calcluated based on multipart upload creation. see https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html#distributedmpupload time rather then completion time. By design on our system the version-id time is calculated based on completion time.
+
 ### Delete marker
 * A dummy file that will be created under the hidden .versions/ sub-directory on DELETE latest request.
 * When A delete marker is the latest version of an object, it indicates that the object is deleted.
