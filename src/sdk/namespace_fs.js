@@ -2082,7 +2082,7 @@ class NamespaceFS {
     ////////////////////
 
     async get_object_tagging(params, object_sdk) {
-        const tag_set = [];
+        let tag_set = [];
         let file_path;
         let file;
         const fs_context = this.prepare_fs_context(object_sdk);
@@ -2097,14 +2097,7 @@ class NamespaceFS {
             file = await nb_native().fs.open(fs_context, file_path);
             const stat = await file.stat(fs_context);
             if (stat.xattr) {
-                for (const [xattr_key, xattr_value] of Object.entries(stat.xattr)) {
-                    if (xattr_key.includes(XATTR_TAG)) {
-                        tag_set.push({
-                            key: xattr_key.replace(XATTR_TAG, ''),
-                            value: xattr_value,
-                        });
-                    }
-                }
+                tag_set = this._get_tags_from_xattr(stat.xattr);
             }
         } catch (err) {
             dbg.error(`NamespaceFS.get_object_tagging: failed in dir ${file_path} with error: `, err);
@@ -2476,6 +2469,14 @@ class NamespaceFS {
     _etag_from_fs_xattr(xattr) {
         if (_.isEmpty(xattr)) return undefined;
         return xattr[XATTR_MD5_KEY];
+    }
+
+    _get_tags_from_xattr(xattr) {
+        const tags_xattr = Object.keys(xattr).filter(xattr_key => xattr_key.includes(XATTR_TAG));
+        return tags_xattr.map(key_xattr => ({
+            key: key_xattr.replace(XATTR_TAG, ''),
+            value: xattr[key_xattr]
+        }));
     }
 
     _number_of_tags_fs_xttr(xattr) {
