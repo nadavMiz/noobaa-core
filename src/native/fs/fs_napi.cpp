@@ -19,6 +19,7 @@
 #include <limits.h>
 #include <map>
 #include <math.h>
+#include <grp.h>
 #include <pwd.h>
 #include <stdlib.h>
 #include <sys/fcntl.h>
@@ -1447,6 +1448,114 @@ struct GetPwName : public FSWorker
     }
 };
 
+/**
+ * Helper: get supplemental groups via getgrouplist.
+ * Returns 0 on success, -1 on failure. Populates out_groups on success.
+ */
+static int
+get_supplemental_groups(const char* user, gid_t gid, std::vector<gid_t>& out_groups)
+{
+    int ngroups = NGROUPS_MAX;
+#ifdef __APPLE__
+    //for some reason on mac getgrouplist accepts an array of int instead of gid_t. so need to create a vector of int and then insert it into groups
+    std::vector<int> tmp_groups(ngroups);
+    if (getgrouplist(user, gid, &tmp_groups[0], &ngroups) < 0) {
+        return -1;
+    }
+    out_groups.assign(tmp_groups.begin(), tmp_groups.begin() + ngroups);
+#else
+    out_groups.resize(ngroups);
+    if (getgrouplist(user, gid, &out_groups[0], &ngroups) < 0) {
+        return -1;
+    }
+    out_groups.resize(ngroups);
+#endif
+    return 0;
+}
+
+static void
+set_supplemental_groups_result(Napi::Env env, Napi::Promise::Deferred& deferred, std::vector<gid_t>& groups)
+{
+    auto res = Napi::Array::New(env, groups.size());
+    for (size_t i = 0; i < groups.size(); ++i) {
+        res.Set(i, Napi::Number::New(env, groups[i]));
+    }
+    deferred.Resolve(res);
+}
+
+/**
+ * GetSupplementalGroupsByUid gets the supplemental groups for a user by uid using getpwuid_r and getgrouplist.
+ */
+struct GetSupplementalGroupsByUid : public FSWorker
+{
+    uid_t _uid;
+    std::vector<gid_t> _groups;
+    GetSupplementalGroupsByUid(const Napi::CallbackInfo& info)
+        : FSWorker(info)
+        , _uid(0)
+    {
+        _uid = info[1].As<Napi::Number>().Uint32Value();
+        Begin(XSTR() << "GetSupplementalGroupsByUid " << DVAL(_uid));
+    }
+    virtual void Work()
+    {
+        const long passwd_buf_size = ThreadScope::get_passwd_buf_size();
+        std::unique_ptr<char[]> buf(new char[passwd_buf_size]);
+        struct passwd pwd;
+        struct passwd* pw = NULL;
+
+        const int res = getpwuid_r(_uid, &pwd, buf.get(), passwd_buf_size, &pw);
+        if (pw == NULL) {
+            if (res != 0) {
+                errno = res; // getpwuid_r returns errno in retval, does not set errno
+                SetSyscallError();
+            }
+            return;
+        }
+        if (get_supplemental_groups(pw->pw_name, pw->pw_gid, _groups) < 0) {
+            if (errno == 0) errno = EIO; // getgrouplist may not set errno
+            SetSyscallError();
+        }
+    }
+    virtual void OnOK()
+    {
+        DBG1("FS::GetSupplementalGroupsByUid::OnOK: " << DVAL(_uid) << DVAL(_groups.size()));
+        set_supplemental_groups_result(Env(), _deferred, _groups);
+    }
+};
+
+/**
+ * GetSupplementalGroupsByUserName gets supplemental groups using getgrouplist with username and primary gid.
+ * Optimization: when user data is already available (e.g. from getpwnam for distinguished_name),
+ * avoids redundant getpwuid_r lookup.
+ */
+struct GetSupplementalGroupsByUserName : public FSWorker
+{
+    std::string _user;
+    gid_t _gid;
+    std::vector<gid_t> _groups;
+    GetSupplementalGroupsByUserName(const Napi::CallbackInfo& info)
+        : FSWorker(info)
+        , _gid(0)
+    {
+        _user = info[1].As<Napi::String>();
+        _gid = info[2].As<Napi::Number>().Uint32Value();
+        Begin(XSTR() << "GetSupplementalGroupsByUserName " << DVAL(_user) << DVAL(_gid));
+    }
+    virtual void Work()
+    {
+        if (get_supplemental_groups(_user.c_str(), _gid, _groups) < 0) {
+            if (errno == 0) errno = EIO; // getgrouplist may not set errno
+            SetSyscallError();
+        }
+    }
+    virtual void OnOK()
+    {
+        DBG1("FS::GetSupplementalGroupsByUserName::OnOK: " << DVAL(_user) << DVAL(_groups.size()));
+        set_supplemental_groups_result(Env(), _deferred, _groups);
+    }
+};
+
 struct FcntlGetLock : public FSWorker
 {
     std::string _path;
@@ -2704,6 +2813,8 @@ fs_napi(Napi::Env env, Napi::Object exports)
     exports_fs["realpath"] = Napi::Function::New(env, api<RealPath>);
     exports_fs["getsinglexattr"] = Napi::Function::New(env, api<GetSingleXattr>);
     exports_fs["getpwname"] = Napi::Function::New(env, api<GetPwName>);
+    exports_fs["getSupplementalGroupsByUid"] = Napi::Function::New(env, api<GetSupplementalGroupsByUid>);
+    exports_fs["getSupplementalGroupsByUserName"] = Napi::Function::New(env, api<GetSupplementalGroupsByUserName>);
     exports_fs["symlink"] = Napi::Function::New(env, api<Symlink>);
     exports_fs["fcntlgetlock"] = Napi::Function::New(env, api<FcntlGetLock>);
 
